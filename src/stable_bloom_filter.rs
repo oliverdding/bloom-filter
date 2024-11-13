@@ -4,12 +4,16 @@ use std::ops::{BitOr, Div};
 
 use log::{debug, info, trace};
 use roaring::RoaringTreemap;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::BloomFilter;
 
 /// Stable Bloom Filter(SBF)
 ///
 /// All hash function share the whole bitmap. Best choice for relatively small dataset.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct StableBloomFilter {
     bitmap: RoaringTreemap,
     // hash number
@@ -30,7 +34,11 @@ impl StableBloomFilter {
     /// * 0 < k <= u32::MAX
     /// * 0 < m <= u32::MAX
     /// * 0 < f < 1
-    pub fn from_scratch(hash_num: u32, bitmap_size: u64, target_false_positive_rate: f64) -> StableBloomFilter {
+    pub fn from_scratch(
+        hash_num: u32,
+        bitmap_size: u64,
+        target_false_positive_rate: f64,
+    ) -> StableBloomFilter {
         trace!(target: "StableBloomFilter", "from_scratch(k = {}, m = {}, f = {}) called",
             hash_num, bitmap_size, target_false_positive_rate);
         StableBloomFilter {
@@ -44,7 +52,7 @@ impl StableBloomFilter {
 
     /// Create an empty bloom filter with max element's size and false positive rate.
     /// The crate would calculate the best hash number and bitmap size.
-    pub fn new(max_size: u64, target_false_positive: f64) -> impl BloomFilter {
+    pub fn new(max_size: u64, target_false_positive: f64) -> Self {
         trace!(target: "StableBloomFilter", "new(n = {}, f = {}) called", max_size, target_false_positive);
         assert_ne!(max_size, 0_u64);
         assert!(target_false_positive.lt(&1_f64) && target_false_positive.gt(&0_f64));
@@ -58,16 +66,24 @@ impl StableBloomFilter {
 }
 
 impl BloomFilter for StableBloomFilter {
-    fn add<T>(&mut self, value: &T) -> bool where T: Hash {
-        self.n = self.n + 1;
-        (0..self.k).map(|i| {
-            let key = crate::utils::get_hash(value, i) % self.m;
-            debug!(target: "StableBloomFilter", "inserting the key: {}", key);
-            self.bitmap.insert(key)
-        }).fold(false, |res, is_exist| res.bitor(is_exist)) // cannot use any() here
+    fn add<T>(&mut self, value: &T) -> bool
+    where
+        T: Hash,
+    {
+        self.n = self.n.saturating_add(1);
+        (0..self.k)
+            .map(|i| {
+                let key = crate::utils::get_hash(value, i) % self.m;
+                debug!(target: "StableBloomFilter", "inserting the key: {}", key);
+                self.bitmap.insert(key)
+            })
+            .fold(false, |res, is_exist| res.bitor(is_exist)) // cannot use any() here
     }
 
-    fn contains<T>(&self, value: &T) -> bool where T: Hash {
+    fn contains<T>(&self, value: &T) -> bool
+    where
+        T: Hash,
+    {
         (0..self.k).all(|i| {
             let key = crate::utils::get_hash(value, i) % self.m;
             debug!(target: "StableBloomFilter", "checking the key: {}", key);
@@ -80,7 +96,9 @@ impl BloomFilter for StableBloomFilter {
     }
 
     fn current_false_positive_rate(&self) -> f64 {
-        (self.bitmap.len() as f64).div(self.m as f64).powf(self.k as f64)
+        (self.bitmap.len() as f64)
+            .div(self.m as f64)
+            .powf(self.k as f64)
     }
 
     fn is_empty(&self) -> bool {

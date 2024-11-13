@@ -3,14 +3,18 @@ use std::hash::Hash;
 use std::ops::{Mul, Sub};
 
 use log::{info, trace};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
-use crate::{BloomFilter, variant_bloom_filter, VariantBloomFilter};
+use crate::{variant_bloom_filter, BloomFilter, VariantBloomFilter};
 
 /// Scalable Bloom Filter(SBF)
 ///
 /// SBF is based on variant bloom filter, consists of one or more filter. When the first filter is full,
 /// a brand new filter with more k and smaller target false positive rate would be added, extending
 /// capacity of SBF while promising target false positive rate.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
 pub struct ScalableBloomFilter {
     vbfs: Vec<VariantBloomFilter>,
     // slices length
@@ -35,12 +39,20 @@ impl ScalableBloomFilter {
     /// * s = 2 or 4
     /// * 0.8 <= r <= 0.9
     /// * 0 < f < 1
-    pub fn from_scratch(first_slices_length: u32, slice_size: u64, s: u8, r: f64, target_false_positive_rate: f64) -> ScalableBloomFilter {
+    pub fn from_scratch(
+        first_slices_length: u32,
+        slice_size: u64,
+        s: u8,
+        r: f64,
+        target_false_positive_rate: f64,
+    ) -> ScalableBloomFilter {
         trace!(target: "ScalableBloomFilter", "from_scratch(k0 = {}, m = {}, s = {}, r = {}, f = {}) called",
             first_slices_length, slice_size, s, r, target_false_positive_rate);
-        let vbfs = vec![
-            VariantBloomFilter::from_scratch(first_slices_length, slice_size, target_false_positive_rate)
-        ];
+        let vbfs = vec![VariantBloomFilter::from_scratch(
+            first_slices_length,
+            slice_size,
+            target_false_positive_rate,
+        )];
         ScalableBloomFilter {
             vbfs,
             k0: first_slices_length,
@@ -53,14 +65,18 @@ impl ScalableBloomFilter {
 
     /// Create an empty bloom filter with max element's size for the first filter and false positive rate.
     /// The crate would calculate the best buckets length and bucket size, and make s = 4, r = 0.9.
-    pub fn new(first_max_size: u64, target_false_positive: f64) -> impl BloomFilter {
+    pub fn new(first_max_size: u64, target_false_positive: f64) -> Self {
         trace!(target: "ScalableBloomFilter", "new(n0 = {}, f = {}) called", first_max_size, target_false_positive);
         assert_ne!(first_max_size, 0_u64);
         assert!(target_false_positive.lt(&1_f64) && target_false_positive.gt(&0_f64));
 
         let k0 = variant_bloom_filter::utils::calculate_best_k(target_false_positive);
         info!(target: "VariantBloomFilter", "the best k is {}", k0);
-        let m = variant_bloom_filter::utils::calculate_best_m(first_max_size, k0, target_false_positive);
+        let m = variant_bloom_filter::utils::calculate_best_m(
+            first_max_size,
+            k0,
+            target_false_positive,
+        );
         info!(target: "VariantBloomFilter", "the best m is {}", m);
         ScalableBloomFilter::from_scratch(k0, m, 4, 0.9, target_false_positive)
     }
@@ -70,21 +86,28 @@ impl ScalableBloomFilter {
         let ki = (self.s as u32).pow(i as u32).mul(self.k0);
         let fi = (self.r).powf(i as f64).mul(self.f);
 
-        self.vbfs.push(VariantBloomFilter::from_scratch(ki, self.m, fi));
+        self.vbfs
+            .push(VariantBloomFilter::from_scratch(ki, self.m, fi));
     }
 }
 
 impl BloomFilter for ScalableBloomFilter {
-    fn add<T>(&mut self, value: &T) -> bool where T: Hash {
+    fn add<T>(&mut self, value: &T) -> bool
+    where
+        T: Hash,
+    {
         let mut i = self.vbfs.len().sub(1);
         if self.vbfs.get(i).unwrap().is_full() {
             self.extend();
-            i = i + 1;
+            i += 1
         }
         self.vbfs.get_mut(i).unwrap().add(value)
     }
 
-    fn contains<T>(&self, value: &T) -> bool where T: Hash {
+    fn contains<T>(&self, value: &T) -> bool
+    where
+        T: Hash,
+    {
         self.vbfs.iter().any(|vbf| vbf.contains(value))
     }
 
@@ -94,14 +117,15 @@ impl BloomFilter for ScalableBloomFilter {
 
     fn current_false_positive_rate(&self) -> f64 {
         1_f64.sub(
-            self.vbfs.iter()
+            self.vbfs
+                .iter()
                 .map(|bfs| 1_f64.sub(bfs.current_false_positive_rate()))
-                .fold(1_f64, |res, vbf_f| res * vbf_f)
+                .fold(1_f64, |res, vbf_f| res * vbf_f),
         )
     }
 
     fn is_empty(&self) -> bool {
-        self.vbfs.get(0).unwrap().is_empty()
+        self.vbfs.first().is_none()
     }
 
     /// Because this is scalable bloom filter, it never gets full

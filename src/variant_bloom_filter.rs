@@ -4,6 +4,8 @@ use std::ops::{BitOr, Div};
 
 use log::{debug, info, trace};
 use roaring::RoaringTreemap;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::BloomFilter;
 
@@ -11,6 +13,8 @@ use crate::BloomFilter;
 ///
 /// Every hash function has it's own slice instead of sharing the whole bitmap.
 /// This introduce the possibility of concurrency of manipulating multiply hash function at the same time.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct VariantBloomFilter {
     slices: Vec<RoaringTreemap>,
     // slices length
@@ -31,12 +35,15 @@ impl VariantBloomFilter {
     /// * 0 < k <= u32::MAX
     /// * 0 < m <= u32::MAX
     /// * 0 < f < 1
-    pub fn from_scratch(slices_length: u32, slice_size: u64, target_false_positive_rate: f64) -> VariantBloomFilter {
+    pub fn from_scratch(
+        slices_length: u32,
+        slice_size: u64,
+        target_false_positive_rate: f64,
+    ) -> VariantBloomFilter {
         trace!(target: "VariantBloomFilter", "from_scratch(k = {}, m = {}, f = {}) called",
             slices_length, slice_size, target_false_positive_rate);
-        let slices: Vec<RoaringTreemap> = (0..slices_length).map(|_| {
-            RoaringTreemap::new()
-        }).collect();
+        let slices: Vec<RoaringTreemap> =
+            (0..slices_length).map(|_| RoaringTreemap::new()).collect();
         VariantBloomFilter {
             slices,
             k: slices_length,
@@ -48,7 +55,7 @@ impl VariantBloomFilter {
 
     /// Create an empty bloom filter with max element's size and false positive rate.
     /// The crate would calculate the best buckets length and bucket size.
-    pub fn new(max_size: u64, target_false_positive: f64) -> impl BloomFilter {
+    pub fn new(max_size: u64, target_false_positive: f64) -> Self {
         trace!(target: "VariantBloomFilter", "new(n = {}, f = {}) called", max_size, target_false_positive);
         assert_ne!(max_size, 0_u64);
         assert!(target_false_positive.lt(&1_f64) && target_false_positive.gt(&0_f64));
@@ -62,16 +69,24 @@ impl VariantBloomFilter {
 }
 
 impl BloomFilter for VariantBloomFilter {
-    fn add<T>(&mut self, value: &T) -> bool where T: Hash {
-        self.n = self.n + 1;
-        (0..self.k).map(|i| {
-            let key = crate::utils::get_hash(value, i) % self.m;
-            debug!(target: "VariantBloomFilter", "inserting the key: {}", key);
-            self.slices[i as usize].insert(key)
-        }).fold(false, |res, is_exist| res.bitor(is_exist)) // cannot use any() here
+    fn add<T>(&mut self, value: &T) -> bool
+    where
+        T: Hash,
+    {
+        self.n = self.n.saturating_add(1);
+        (0..self.k)
+            .map(|i| {
+                let key = crate::utils::get_hash(value, i) % self.m;
+                debug!(target: "VariantBloomFilter", "inserting the key: {}", key);
+                self.slices[i as usize].insert(key)
+            })
+            .fold(false, |res, is_exist| res.bitor(is_exist)) // cannot use any() here
     }
 
-    fn contains<T>(&self, value: &T) -> bool where T: Hash {
+    fn contains<T>(&self, value: &T) -> bool
+    where
+        T: Hash,
+    {
         (0..self.k).all(|i| {
             let key = crate::utils::get_hash(value, i) % self.m;
             debug!(target: "VariantBloomFilter", "checking the key: {}", key);
@@ -84,15 +99,14 @@ impl BloomFilter for VariantBloomFilter {
     }
 
     fn current_false_positive_rate(&self) -> f64 {
-        self.slices.iter().map(|slice| {
-            (slice.len() as f64).div(self.m as f64)
-        }).fold(1_f64, |res, slice_f| res * slice_f)
+        self.slices
+            .iter()
+            .map(|slice| (slice.len() as f64).div(self.m as f64))
+            .fold(1_f64, |res, slice_f| res * slice_f)
     }
 
     fn is_empty(&self) -> bool {
-        self.slices.iter().all(|slice| {
-            slice.is_empty()
-        })
+        self.slices.iter().all(|slice| slice.is_empty())
     }
 
     fn is_full(&self) -> bool {
@@ -118,7 +132,10 @@ pub(crate) mod utils {
     use std::ops::{Div, Mul};
 
     pub fn calculate_best_m(n: u64, k: u32, f: f64) -> u64 {
-        (n as f64).mul(f.ln().abs()).div((k as f64).mul(2_f64.ln().powi(2))).ceil() as u64
+        (n as f64)
+            .mul(f.ln().abs())
+            .div((k as f64).mul(2_f64.ln().powi(2)))
+            .ceil() as u64
     }
 
     pub fn calculate_best_k(f: f64) -> u32 {
